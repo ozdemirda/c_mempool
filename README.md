@@ -118,10 +118,10 @@ int main() {
     snprintf(str_ptr, 24, "Hello world!\n");
     printf("%p => %s", str_ptr, str_ptr);
 
-	// Let's extend the memory block, it should still contain
-	// the same data, but the pointer will contain a different
-	// address.
-	str_ptr = r_mempool_realloc_entry(rmp, str_ptr, 48);
+    // Let's extend the memory block, it should still contain
+    // the same data, but the pointer will contain a different
+    // address.
+    str_ptr = r_mempool_realloc_entry(rmp, str_ptr, 48);
     printf("%p => %s", str_ptr, str_ptr);
 
     // Let's return the slot back to the pool.

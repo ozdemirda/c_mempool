@@ -221,6 +221,7 @@ void __mempool_free_entry(mempool *mp, entry_header *header) {
   if (valid_mempool_addr(mp, c_header)) {
     if (mp->ext_elem_size != header->ext_elem_size) {
       // The size got overwritten.
+      pthread_rwlock_unlock(&mp->lock);
       assert(false);
     }
 

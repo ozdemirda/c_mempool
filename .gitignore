@@ -1,0 +1,9 @@
+.vscode/
+obj/
+libcmempool.so
+test/tests
+test/coverage/
+*.gcno
+*.gcda
+*.gcov
+*.c.info

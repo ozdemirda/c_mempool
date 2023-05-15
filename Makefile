@@ -25,4 +25,4 @@ libcmempool.so: $(OBJ_FILES)
 $(OBJECT_DIR)/%.o: $(SOURCE_DIR)/%.c $(HEADER_FILES)
 	$(CC) $(CFLAGS) $< -o $@
 clean:
-	rm -rf libcmempool.so $(OBJECT_DIR)
+	rm -rf libcmempool.so $(OBJECT_DIR) test/tests test/coverage

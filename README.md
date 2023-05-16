@@ -111,8 +111,8 @@ int main() {
     }
 
     // The following function call will return a preallocated buffer
-    // from the pool of slots that are 256 bytes long, since
-    // pow(2, ceil(log2(200))) is 256.
+    // from the pool of slots that are 32 bytes long, since
+    // pow(2, ceil(log2(24))) is 32.
     char *str_ptr = (char*)r_mempool_alloc_entry(rmp, 24);
 
     snprintf(str_ptr, 24, "Hello world!\n");

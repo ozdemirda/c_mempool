@@ -31,6 +31,11 @@ SOFTWARE.
 #include <math.h>
 #include <string.h>
 
+#define mem_alloc(size) malloc(size)
+#define mem_calloc(elem_count, elem_size) calloc(elem_count, elem_size)
+#define mem_realloc(ptr, new_size) realloc(ptr, new_size)
+#define mem_free(ptr) free(ptr)
+
 typedef uintptr_t *addr_t;
 
 const char *_mempool_mark = "mempool";
@@ -72,9 +77,9 @@ typedef struct entry_header {
 
 void _mempool_destroy(mempool *mp) {
   if (mp) {
-    if (mp->objects) free(mp->objects);
+    if (mp->objects) mem_free(mp->objects);
     pthread_rwlock_destroy(&mp->lock);
-    free(mp);
+    mem_free(mp);
   }
 }
 
@@ -114,13 +119,13 @@ mempool *mempool_create(uint32_t elem_count, uint32_t elem_size,
     elem_size = sizeof(addr_t);
   }
 
-  mempool *mp = (mempool *)calloc(1, sizeof(mempool));
+  mempool *mp = (mempool *)mem_calloc(1, sizeof(mempool));
   if (!mp) {
     return NULL;
   }
 
   uint32_t ext_elem_size = USER_SIZE_TO_EXT_SIZE(elem_size);
-  mp->objects = calloc(elem_count, ext_elem_size);
+  mp->objects = mem_calloc(elem_count, ext_elem_size);
   if (!mp->objects) {
     mempool_destroy(mp);
     return NULL;
@@ -163,7 +168,7 @@ void *mempool_alloc_entry(mempool *mp) {
     // Seems like we exhausted our buffers and
     // we are asked to fallback to the dynamic
     // memory allocation mechanisms.
-    void *new_buffer = malloc(mp->ext_elem_size);
+    void *new_buffer = mem_alloc(mp->ext_elem_size);
     if (new_buffer) {
       entry_header *header = (entry_header *)new_buffer;
       header->elem_status = elem_is_not_a_pool_member;
@@ -213,7 +218,7 @@ void __mempool_free_entry(mempool *mp, entry_header *header) {
       assert(false);
     }
     --mp->active_dynamic_memory_buffer_count;
-    free(header);
+    mem_free(header);
     pthread_rwlock_unlock(&mp->lock);
     return;
   }
@@ -347,17 +352,17 @@ void _r_mempool_destroy(r_mempool *rmp) {
           mempool_destroy(rmp->mem_pools[i]);
         }
       }
-      free(rmp->mem_pools);
+      mem_free(rmp->mem_pools);
     }
     if (rmp->reverse_size_lookup_array) {
-      free(rmp->reverse_size_lookup_array);
+      mem_free(rmp->reverse_size_lookup_array);
     }
 
     if (rmp->fb_policy == fallback_at_last_exhaustion) {
       pthread_rwlock_destroy(&rmp->pseudo_pool.lock);
     }
 
-    free(rmp);
+    mem_free(rmp);
   }
 }
 
@@ -410,7 +415,7 @@ bool init_r_mempool_internal_pools(r_mempool *rmp) {
   }
 
   rmp->mem_pools =
-      (mempool **)malloc(rmp->number_of_mempools * sizeof(mempool));
+      (mempool **)mem_alloc(rmp->number_of_mempools * sizeof(mempool));
   if (!rmp->mem_pools) {
     // The cleanup will be performed by the caller.
     return false;
@@ -435,7 +440,7 @@ bool init_r_mempool_internal_pools(r_mempool *rmp) {
 }
 
 bool init_r_mempool_reverse_size_lookup_array(r_mempool *rmp) {
-  rmp->reverse_size_lookup_array = (uint32_t *)malloc(
+  rmp->reverse_size_lookup_array = (uint32_t *)mem_alloc(
       rmp->largest_size / rmp->smallest_size * sizeof(uint32_t));
   if (!rmp->reverse_size_lookup_array) {
     // The cleanup will be performed by the caller.
@@ -458,7 +463,7 @@ bool init_r_mempool_reverse_size_lookup_array(r_mempool *rmp) {
 r_mempool *r_mempool_create(uint32_t smallest_size, uint32_t largest_size,
                             uint32_t smallest_elem_count,
                             r_memory_fallback_policy_t fb_policy) {
-  r_mempool *rmp = (r_mempool *)malloc(sizeof(r_mempool));
+  r_mempool *rmp = (r_mempool *)mem_alloc(sizeof(r_mempool));
   if (!rmp) {
     return NULL;
   }
@@ -495,7 +500,7 @@ void *mempool_pseudo_alloc_entry(mempool *mp, uint32_t elem_size) {
   uint32_t ext_elem_size = USER_SIZE_TO_EXT_SIZE(elem_size);
 
   pthread_rwlock_wrlock(&mp->lock);
-  void *new_buffer = malloc(ext_elem_size);
+  void *new_buffer = mem_alloc(ext_elem_size);
   if (new_buffer) {
     entry_header *header = (entry_header *)new_buffer;
     header->elem_status = elem_is_not_a_pool_member;

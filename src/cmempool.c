@@ -36,6 +36,13 @@ SOFTWARE.
 #define mem_realloc(ptr, new_size) realloc(ptr, new_size)
 #define mem_free(ptr) free(ptr)
 
+#define rw_lock_t pthread_rwlock_t
+#define rw_lock_destroy(a) pthread_rwlock_destroy(a)
+#define rw_lock_init(a) pthread_rwlock_init(a, NULL)
+#define rw_lock_wrlock(a) pthread_rwlock_wrlock(a)
+#define rw_lock_rdlock(a) pthread_rwlock_rdlock(a)
+#define rw_lock_unlock(a) pthread_rwlock_unlock(a)
+
 typedef uintptr_t *addr_t;
 
 const char *_mempool_mark = "mempool";
@@ -60,7 +67,7 @@ struct mempool {
   uint32_t free_elem_count;
   void *objects;
   void *free_inst;
-  pthread_rwlock_t lock;
+  rw_lock_t lock;
 };
 
 const uint32_t elem_is_free = 0xdeadbeef;
@@ -78,7 +85,7 @@ typedef struct entry_header {
 void _mempool_destroy(mempool *mp) {
   if (mp) {
     if (mp->objects) mem_free(mp->objects);
-    pthread_rwlock_destroy(&mp->lock);
+    rw_lock_destroy(&mp->lock);
     mem_free(mp);
   }
 }
@@ -131,7 +138,7 @@ mempool *mempool_create(uint32_t elem_count, uint32_t elem_size,
     return NULL;
   }
 
-  if (pthread_rwlock_init(&mp->lock, NULL) != 0) {
+  if (rw_lock_init(&mp->lock) != 0) {
     mempool_destroy(mp);
     return NULL;
   }
@@ -149,14 +156,14 @@ void *mempool_alloc_entry(mempool *mp) {
 
   void *result = NULL;
 
-  pthread_rwlock_wrlock(&mp->lock);
+  rw_lock_wrlock(&mp->lock);
 
   if (mp->free_inst) {
     entry_header *header = (entry_header *)mp->free_inst;
 
     if (header->elem_status != elem_is_free || header->pool_ptr != mp) {
       // We have a corruption!
-      pthread_rwlock_unlock(&mp->lock);
+      rw_lock_unlock(&mp->lock);
       assert(false);
     }
 
@@ -179,7 +186,7 @@ void *mempool_alloc_entry(mempool *mp) {
     }
   }
 
-  pthread_rwlock_unlock(&mp->lock);
+  rw_lock_unlock(&mp->lock);
 
   return result;
 }
@@ -207,26 +214,26 @@ void __mempool_free_entry(mempool *mp, entry_header *header) {
 
   uintptr_t c_header = (uintptr_t)header;
 
-  pthread_rwlock_wrlock(&mp->lock);
+  rw_lock_wrlock(&mp->lock);
 
   if (header->elem_status == elem_is_not_a_pool_member) {
     // We allocated this buffer when we had exhausted
     // our own buffers.
     if (mp->active_dynamic_memory_buffer_count == 0) {
       // Something is not right, most probably a double free
-      pthread_rwlock_unlock(&mp->lock);
+      rw_lock_unlock(&mp->lock);
       assert(false);
     }
     --mp->active_dynamic_memory_buffer_count;
     mem_free(header);
-    pthread_rwlock_unlock(&mp->lock);
+    rw_lock_unlock(&mp->lock);
     return;
   }
 
   if (valid_mempool_addr(mp, c_header)) {
     if (mp->ext_elem_size != header->ext_elem_size) {
       // The size got overwritten.
-      pthread_rwlock_unlock(&mp->lock);
+      rw_lock_unlock(&mp->lock);
       assert(false);
     }
 
@@ -238,13 +245,13 @@ void __mempool_free_entry(mempool *mp, entry_header *header) {
         // Was this address returned to the pool before?
         if (header->elem_status == elem_is_free) {
           // Double free!
-          pthread_rwlock_unlock(&mp->lock);
+          rw_lock_unlock(&mp->lock);
           assert(false);
         }
       }
 
       // Somehow the entry got overwritten.
-      pthread_rwlock_unlock(&mp->lock);
+      rw_lock_unlock(&mp->lock);
       assert(false);
     }
 
@@ -253,11 +260,11 @@ void __mempool_free_entry(mempool *mp, entry_header *header) {
     mp->free_inst = header;
     ++mp->free_elem_count;
   } else {
-    pthread_rwlock_unlock(&mp->lock);
+    rw_lock_unlock(&mp->lock);
     assert(false);
   }
 
-  pthread_rwlock_unlock(&mp->lock);
+  rw_lock_unlock(&mp->lock);
 }
 
 void _mempool_free_entry(void *entry) {
@@ -293,9 +300,9 @@ uint32_t mempool_total_capacity(mempool *mp) {
 
   uint32_t result = 0;
 
-  pthread_rwlock_rdlock(&mp->lock);
+  rw_lock_rdlock(&mp->lock);
   result = mp->total_elem_count;
-  pthread_rwlock_unlock(&mp->lock);
+  rw_lock_unlock(&mp->lock);
 
   return result;
 }
@@ -307,9 +314,9 @@ uint32_t mempool_used_count(mempool *mp) {
 
   uint32_t result = 0;
 
-  pthread_rwlock_rdlock(&mp->lock);
+  rw_lock_rdlock(&mp->lock);
   result = mp->total_elem_count - mp->free_elem_count;
-  pthread_rwlock_unlock(&mp->lock);
+  rw_lock_unlock(&mp->lock);
 
   return result;
 }
@@ -321,9 +328,9 @@ uint32_t mempool_dynamic_allocs_count(mempool *mp) {
 
   uint32_t result = 0;
 
-  pthread_rwlock_rdlock(&mp->lock);
+  rw_lock_rdlock(&mp->lock);
   result = mp->active_dynamic_memory_buffer_count;
-  pthread_rwlock_unlock(&mp->lock);
+  rw_lock_unlock(&mp->lock);
 
   return result;
 }
@@ -499,7 +506,7 @@ void *mempool_pseudo_alloc_entry(mempool *mp, uint32_t elem_size) {
 
   uint32_t ext_elem_size = USER_SIZE_TO_EXT_SIZE(elem_size);
 
-  pthread_rwlock_wrlock(&mp->lock);
+  rw_lock_wrlock(&mp->lock);
   void *new_buffer = mem_alloc(ext_elem_size);
   if (new_buffer) {
     entry_header *header = (entry_header *)new_buffer;
@@ -509,7 +516,7 @@ void *mempool_pseudo_alloc_entry(mempool *mp, uint32_t elem_size) {
     result = (void *)&header->next;
     ++mp->active_dynamic_memory_buffer_count;
   }
-  pthread_rwlock_unlock(&mp->lock);
+  rw_lock_unlock(&mp->lock);
 
   return result;
 }

@@ -9,7 +9,7 @@ _create_object_dir := $(shell mkdir -p $(OBJECT_DIR))
 CFLAGS = -I$(INCLUDE_DIR) -c -fPIC -fstack-protector-all \
 	-Wstrict-overflow -Wformat=2 -Wformat-security -Wall -Wextra \
 	-g3 -O3 -Werror
-LFLAGS = -shared -lpthread -lm
+LFLAGS = -shared -lpthread
 
 SOURCE_FILES = $(SOURCE_DIR)/cmempool.c
 HEADER_FILES = $(INCLUDE_DIR)/cmempool.h

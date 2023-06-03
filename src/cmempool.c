@@ -28,7 +28,6 @@ SOFTWARE.
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
-#include <math.h>
 #include <string.h>
 
 #define mem_alloc(size) malloc(size)
@@ -336,8 +335,8 @@ uint32_t mempool_dynamic_allocs_count(mempool *mp) {
 }
 
 // Ranged memory pool implementation starts
-const uint32_t min_allowed_smallest_size = 16;
-const uint32_t max_allowed_largest_size = 131072;
+const uint32_t min_allowed_smallest_size = 8;
+const uint32_t max_allowed_largest_size = 2147483648;
 
 struct r_mempool {
   mempool **mem_pools;  // The real memory pools
@@ -373,6 +372,99 @@ void _r_mempool_destroy(r_mempool *rmp) {
   }
 }
 
+#define POWERS_OF_TWO_LEN 32
+uint32_t uint32_powers_of_two[POWERS_OF_TWO_LEN] =
+    {
+        1,          2,         4,        8,         16,        32,
+        64,         128,       256,      512,       1024,      2048,
+        4096,       8192,      16384,    32768,     65536,     131072,
+        262144,     524288,    1048576,  2097152,   4194304,   8388608,
+        16777216,   33554432,  67108864, 134217728, 268435456, 536870912,
+        1073741824, 2147483648};  // 4294967296 exceeds 32 bits
+
+// Kind of a "pow(2, ceil(log2(input)))" without the math library.
+uint32_t find_nearest_gte_power_of_two(uint32_t input) {
+  int left = 0;
+  int right = POWERS_OF_TWO_LEN - 1;
+  int middle = (left + right) / 2;
+
+  if (input <= uint32_powers_of_two[0]) {
+    return uint32_powers_of_two[0];
+  }
+
+  if (input >= uint32_powers_of_two[POWERS_OF_TWO_LEN - 1]) {
+    return uint32_powers_of_two[POWERS_OF_TWO_LEN - 1];
+  }
+
+  uint32_t result = 0;
+
+  while (left < right) {
+    if (uint32_powers_of_two[middle] == input ||
+        (middle > 0 && uint32_powers_of_two[middle - 1] < input &&
+         input < uint32_powers_of_two[middle])) {
+      result = uint32_powers_of_two[middle];
+      break;
+    } else if (middle < (POWERS_OF_TWO_LEN - 1) &&
+               uint32_powers_of_two[middle] < input &&
+               input <= uint32_powers_of_two[middle + 1]) {
+      result = uint32_powers_of_two[middle + 1];
+      break;
+    }
+
+    if (input < uint32_powers_of_two[middle]) {
+      right = middle;
+    } else {
+      left = middle;
+    }
+
+    middle = (left + right) / 2;
+  }
+
+  return result;
+}
+
+uint32_t nearest_ceil_log2(uint32_t input) {
+  int left = 0;
+  int right = POWERS_OF_TWO_LEN - 1;
+  int middle = (left + right) / 2;
+
+  if (input <= uint32_powers_of_two[0]) {
+    // Normally zero as an input should be invalid, here, I've
+    // bended the rules, as it's safe in this context.
+    return 0;
+  }
+
+  if (input >= uint32_powers_of_two[POWERS_OF_TWO_LEN - 1]) {
+    return (POWERS_OF_TWO_LEN - 1);
+  }
+
+  uint32_t result = 0;
+
+  while (left < right) {
+    if (uint32_powers_of_two[middle] == input ||
+        (middle > 0 && uint32_powers_of_two[middle - 1] < input &&
+         input < uint32_powers_of_two[middle])) {
+      result = middle;
+      break;
+    } else if (middle < (POWERS_OF_TWO_LEN - 1) &&
+               uint32_powers_of_two[middle] < input &&
+               input <= uint32_powers_of_two[middle + 1]) {
+      result = (middle + 1);
+      break;
+    }
+
+    if (input < uint32_powers_of_two[middle]) {
+      right = middle;
+    } else {
+      left = middle;
+    }
+
+    middle = (left + right) / 2;
+  }
+
+  return result;
+}
+
 bool adjust_and_assess_r_mempool_create_inputs(
     r_mempool *rmp, uint32_t *smallest_size, uint32_t *largest_size,
     uint32_t *smallest_elem_count, r_memory_fallback_policy_t fb_policy) {
@@ -380,9 +472,9 @@ bool adjust_and_assess_r_mempool_create_inputs(
     return false;
   }
 
-  *smallest_size = powl(2, ceill(log2l(*smallest_size)));
-  *largest_size = powl(2, ceill(log2l(*largest_size)));
-  *smallest_elem_count = powl(2, ceill(log2l(*smallest_elem_count)));
+  *smallest_size = find_nearest_gte_power_of_two(*smallest_size);
+  *largest_size = find_nearest_gte_power_of_two(*largest_size);
+  *smallest_elem_count = find_nearest_gte_power_of_two(*smallest_elem_count);
 
   if (*largest_size <= *smallest_size ||
       *largest_size > max_allowed_largest_size ||
@@ -397,7 +489,8 @@ bool adjust_and_assess_r_mempool_create_inputs(
   rmp->smallest_size = *smallest_size;
   rmp->largest_size = *largest_size;
   rmp->smallest_elem_count = *smallest_elem_count;
-  rmp->number_of_mempools = log2l(*largest_size) - log2l(*smallest_size) + 1;
+  rmp->number_of_mempools =
+      nearest_ceil_log2(*largest_size) - nearest_ceil_log2(*smallest_size) + 1;
   rmp->reverse_size_lookup_array_length = (*largest_size) / (*smallest_size);
 
   return true;

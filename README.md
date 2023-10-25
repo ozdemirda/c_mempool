@@ -103,8 +103,10 @@ int main() {
     // via its next larger internal memory pools, and it
     // would only fall back to the OS when no internal
     // buffers were available.
-    r_mempool *rmp = r_mempool_create(16, 65536, 131072,
-        fallback_at_first_exhaustion);
+    r_mempool *rmp = r_mempool_create(4,  // 2^4  - smallest element size
+                                      16, // 2^16 - largest element size
+                                      17, // 2^17 - number of smallest elements
+                                      fallback_at_first_exhaustion);
     if (!rmp) {
         // Failed to create a new memory pool!
         exit(EXIT_FAILURE);

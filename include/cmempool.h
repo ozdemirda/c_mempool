@@ -32,9 +32,9 @@ SOFTWARE.
 #define _GNU_SOURCE
 #endif
 
-#include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 // Ordinary mempool declarations
 typedef struct mempool mempool;
@@ -49,7 +49,8 @@ typedef struct __dummy_struct_for_offset_dont_use {
 } __dummy_struct_for_offset_dont_use;
 
 mempool *mempool_create(uint32_t elem_count, uint32_t elem_size,
-                        bool fallback_to_dynamic_memory);
+                        bool fallback_to_dynamic_memory,
+                        bool will_be_accessed_by_only_one_thread);
 
 #define DECLARE_STATIC_MEMPOOL_BUFFER(name, elem_count, elem_size) \
   static uint8_t                                                   \
@@ -59,7 +60,7 @@ mempool *mempool_create(uint32_t elem_count, uint32_t elem_size,
 
 mempool *mempool_create_from_preallocated_buffer(
     void *buffer, uint32_t buf_size, uint32_t elem_size,
-    bool fallback_to_dynamic_memory);
+    bool fallback_to_dynamic_memory, bool will_be_accessed_by_only_one_thread);
 
 void _mempool_destroy(mempool *mp);
 
@@ -115,7 +116,8 @@ typedef enum r_memory_fallback_policy_t {
 r_mempool *r_mempool_create(uint8_t smallest_size_power_of_two,
                             uint8_t largest_size_power_of_two,
                             uint8_t number_of_smallest_size_elems_power_of_two,
-                            r_memory_fallback_policy_t fb_policy);
+                            r_memory_fallback_policy_t fb_policy,
+                            bool will_be_accessed_by_only_one_thread);
 
 // The macro CALCULATE_STATIC_RMEMPOOL_BUFFER_SIZE calculates
 // the required size for a rmempool. It is not meant to be used
@@ -143,7 +145,8 @@ r_mempool *r_mempool_create_from_preallocated_buffer(
     void *buffer, uint32_t buf_size, uint8_t smallest_size_power_of_two,
     uint8_t largest_size_power_of_two,
     uint8_t number_of_smallest_size_elems_power_of_two,
-    r_memory_fallback_policy_t fb_policy);
+    r_memory_fallback_policy_t fb_policy,
+    bool will_be_accessed_by_only_one_thread);
 
 void _r_mempool_destroy(r_mempool *rmp);
 

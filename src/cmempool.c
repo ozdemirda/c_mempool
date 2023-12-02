@@ -22,11 +22,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include <cmempool.h>
-#include <stdlib.h>
 #include <assert.h>
+#include <cmempool.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define mem_alloc(size) malloc(size)
@@ -74,6 +74,7 @@ struct mempool {
   uint32_t free_elem_count;
   void *objects;
   bool is_preallocated;
+  bool should_use_locks;
   void *free_inst;
   rw_lock_t lock;
 };
@@ -87,7 +88,9 @@ void _mempool_destroy(mempool *mp) {
     if (!mp->is_preallocated && mp->objects) {
       mem_free(mp->objects);
     }
-    rw_lock_destroy(&mp->lock);
+    if (mp->should_use_locks) {
+      rw_lock_destroy(&mp->lock);
+    }
     mem_free(mp);
   }
 }
@@ -120,7 +123,8 @@ void mempool_init_internal_scalars(mempool *mp, uint32_t elem_count,
 }
 
 mempool *mempool_create(uint32_t elem_count, uint32_t elem_size,
-                        bool fallback_to_dynamic_memory) {
+                        bool fallback_to_dynamic_memory,
+                        bool will_be_accessed_by_only_one_thread) {
   if (elem_count == 0 || elem_size == 0) {
     return NULL;
   } else if (elem_size < sizeof(addr_t)) {
@@ -139,9 +143,13 @@ mempool *mempool_create(uint32_t elem_count, uint32_t elem_size,
     return NULL;
   }
 
-  if (rw_lock_init(&mp->lock) != 0) {
-    mempool_destroy(mp);
-    return NULL;
+  mp->should_use_locks = !will_be_accessed_by_only_one_thread;
+
+  if (mp->should_use_locks) {
+    if (rw_lock_init(&mp->lock) != 0) {
+      mempool_destroy(mp);
+      return NULL;
+    }
   }
 
   mempool_init_internal_scalars(mp, elem_count, ext_elem_size,
@@ -152,7 +160,7 @@ mempool *mempool_create(uint32_t elem_count, uint32_t elem_size,
 
 mempool *mempool_create_from_preallocated_buffer(
     void *buffer, uint32_t buf_size, uint32_t elem_size,
-    bool fallback_to_dynamic_memory) {
+    bool fallback_to_dynamic_memory, bool will_be_accessed_by_only_one_thread) {
   if (!buffer || elem_size < sizeof(addr_t) ||
       buf_size < (sizeof(entry_header))) {
     return NULL;
@@ -171,9 +179,13 @@ mempool *mempool_create_from_preallocated_buffer(
   mp->is_preallocated = true;
   mp->objects = buffer;
 
-  if (rw_lock_init(&mp->lock) != 0) {
-    mempool_destroy(mp);
-    return NULL;
+  mp->should_use_locks = !will_be_accessed_by_only_one_thread;
+
+  if (mp->should_use_locks) {
+    if (rw_lock_init(&mp->lock) != 0) {
+      mempool_destroy(mp);
+      return NULL;
+    }
   }
 
   mempool_init_internal_scalars(mp, elem_count, ext_elem_size,
@@ -189,14 +201,18 @@ void *mempool_alloc_entry(mempool *mp) {
 
   void *result = NULL;
 
-  rw_lock_wrlock(&mp->lock);
+  if (mp->should_use_locks) {
+    rw_lock_wrlock(&mp->lock);
+  }
 
   if (mp->free_inst) {
     entry_header *header = (entry_header *)mp->free_inst;
 
     if (header->elem_status != elem_is_free || header->pool_ptr != mp) {
       // We have a corruption!
-      rw_lock_unlock(&mp->lock);
+      if (mp->should_use_locks) {
+        rw_lock_unlock(&mp->lock);
+      }
       assert(false);
     }
 
@@ -218,7 +234,9 @@ void *mempool_alloc_entry(mempool *mp) {
     }
   }
 
-  rw_lock_unlock(&mp->lock);
+  if (mp->should_use_locks) {
+    rw_lock_unlock(&mp->lock);
+  }
 
   return result;
 }
@@ -246,19 +264,25 @@ void __mempool_free_entry(mempool *mp, entry_header *header) {
 
   uintptr_t c_header = (uintptr_t)header;
 
-  rw_lock_wrlock(&mp->lock);
+  if (mp->should_use_locks) {
+    rw_lock_wrlock(&mp->lock);
+  }
 
   if (header->elem_status == elem_is_not_a_pool_member) {
     // We allocated this buffer when we had exhausted
     // our own buffers.
     if (mp->active_dynamic_memory_buffer_count == 0) {
       // Something is not right, most probably a double free
-      rw_lock_unlock(&mp->lock);
+      if (mp->should_use_locks) {
+        rw_lock_unlock(&mp->lock);
+      }
       assert(false);
     }
     --mp->active_dynamic_memory_buffer_count;
     mem_free(header);
-    rw_lock_unlock(&mp->lock);
+    if (mp->should_use_locks) {
+      rw_lock_unlock(&mp->lock);
+    }
     return;
   }
 
@@ -270,13 +294,17 @@ void __mempool_free_entry(mempool *mp, entry_header *header) {
         // Was this address returned to the pool before?
         if (header->elem_status == elem_is_free) {
           // Double free!
-          rw_lock_unlock(&mp->lock);
+          if (mp->should_use_locks) {
+            rw_lock_unlock(&mp->lock);
+          }
           assert(false);
         }
       }
 
       // Somehow the entry got overwritten.
-      rw_lock_unlock(&mp->lock);
+      if (mp->should_use_locks) {
+        rw_lock_unlock(&mp->lock);
+      }
       assert(false);
     }
 
@@ -285,11 +313,15 @@ void __mempool_free_entry(mempool *mp, entry_header *header) {
     mp->free_inst = header;
     ++mp->free_elem_count;
   } else {
-    rw_lock_unlock(&mp->lock);
+    if (mp->should_use_locks) {
+      rw_lock_unlock(&mp->lock);
+    }
     assert(false);
   }
 
-  rw_lock_unlock(&mp->lock);
+  if (mp->should_use_locks) {
+    rw_lock_unlock(&mp->lock);
+  }
 }
 
 void _mempool_free_entry(void *entry) {
@@ -325,9 +357,15 @@ uint32_t mempool_total_capacity(mempool *mp) {
 
   uint32_t result = 0;
 
-  rw_lock_rdlock(&mp->lock);
+  if (mp->should_use_locks) {
+    rw_lock_rdlock(&mp->lock);
+  }
+
   result = mp->total_elem_count;
-  rw_lock_unlock(&mp->lock);
+
+  if (mp->should_use_locks) {
+    rw_lock_unlock(&mp->lock);
+  }
 
   return result;
 }
@@ -339,9 +377,15 @@ uint32_t mempool_used_count(mempool *mp) {
 
   uint32_t result = 0;
 
-  rw_lock_rdlock(&mp->lock);
+  if (mp->should_use_locks) {
+    rw_lock_rdlock(&mp->lock);
+  }
+
   result = mp->total_elem_count - mp->free_elem_count;
-  rw_lock_unlock(&mp->lock);
+
+  if (mp->should_use_locks) {
+    rw_lock_unlock(&mp->lock);
+  }
 
   return result;
 }
@@ -353,9 +397,15 @@ uint32_t mempool_dynamic_allocs_count(mempool *mp) {
 
   uint32_t result = 0;
 
-  rw_lock_rdlock(&mp->lock);
+  if (mp->should_use_locks) {
+    rw_lock_rdlock(&mp->lock);
+  }
+
   result = mp->active_dynamic_memory_buffer_count;
-  rw_lock_unlock(&mp->lock);
+
+  if (mp->should_use_locks) {
+    rw_lock_unlock(&mp->lock);
+  }
 
   return result;
 }
@@ -368,6 +418,7 @@ struct r_mempool {
   mempool **mem_pools;  // The real memory pools
   mempool pseudo_pool;
   r_memory_fallback_policy_t fb_policy;
+  bool should_use_locks;
   uint32_t number_of_mempools;
   uint32_t *reverse_size_lookup_array;
   uint32_t reverse_size_lookup_array_length;
@@ -391,7 +442,9 @@ void _r_mempool_destroy(r_mempool *rmp) {
     }
 
     if (rmp->fb_policy == fallback_at_last_exhaustion) {
-      pthread_rwlock_destroy(&rmp->pseudo_pool.lock);
+      if (rmp->should_use_locks) {
+        rw_lock_destroy(&rmp->pseudo_pool.lock);
+      }
     }
 
     mem_free(rmp);
@@ -402,7 +455,8 @@ bool assess_r_mempool_create_inputs(r_mempool *rmp,
                                     uint8_t smallest_size_power_of_two,
                                     uint8_t largest_size_power_of_two,
                                     uint8_t smallest_elem_count_power_of_two,
-                                    r_memory_fallback_policy_t fb_policy) {
+                                    r_memory_fallback_policy_t fb_policy,
+                                    bool will_be_accessed_by_only_one_thread) {
   if (smallest_size_power_of_two == 0 || largest_size_power_of_two == 0 ||
       smallest_elem_count_power_of_two == 0) {
     return false;
@@ -427,6 +481,7 @@ bool assess_r_mempool_create_inputs(r_mempool *rmp,
     return false;
   }
 
+  rmp->should_use_locks = !will_be_accessed_by_only_one_thread;
   rmp->smallest_size = smallest_size;
   rmp->largest_size = largest_size;
   rmp->smallest_elem_count = smallest_elem_count;
@@ -440,8 +495,10 @@ bool assess_r_mempool_create_inputs(r_mempool *rmp,
 bool init_r_mempool_pseudo_pool(r_mempool *rmp) {
   memset(&rmp->pseudo_pool, 0, sizeof(mempool));
   if (rmp->fb_policy == fallback_at_last_exhaustion) {
-    if (pthread_rwlock_init(&rmp->pseudo_pool.lock, NULL) != 0) {
-      return false;
+    if (rmp->should_use_locks) {
+      if (rw_lock_init(&rmp->pseudo_pool.lock) != 0) {
+        return false;
+      }
     }
     rmp->pseudo_pool.fallback_to_dynamic_memory = true;
     rmp->pseudo_pool.mempool_mark = _mempool_mark;
@@ -470,7 +527,8 @@ bool init_r_mempool_internal_pools(r_mempool *rmp) {
   for (uint32_t esize = first_size, ecount = first_count, index = 0;
        esize <= last_size; esize *= 2, ecount /= 2, ++index) {
     rmp->mem_pools[index] = mempool_create(
-        ecount, esize, rmp->fb_policy == fallback_at_first_exhaustion);
+        ecount, esize, rmp->fb_policy == fallback_at_first_exhaustion,
+        !rmp->should_use_locks);
     if (!rmp->mem_pools[index]) {
       // The cleanup will be performed by the caller.
       return false;
@@ -504,7 +562,8 @@ bool init_r_mempool_reverse_size_lookup_array(r_mempool *rmp) {
 r_mempool *r_mempool_create(uint8_t smallest_size_power_of_two,
                             uint8_t largest_size_power_of_two,
                             uint8_t smallest_elem_count_power_of_two,
-                            r_memory_fallback_policy_t fb_policy) {
+                            r_memory_fallback_policy_t fb_policy,
+                            bool will_be_accessed_by_only_one_thread) {
   r_mempool *rmp = (r_mempool *)mem_calloc(1, sizeof(r_mempool));
   if (!rmp) {
     return NULL;
@@ -512,7 +571,8 @@ r_mempool *r_mempool_create(uint8_t smallest_size_power_of_two,
 
   if (!assess_r_mempool_create_inputs(
           rmp, smallest_size_power_of_two, largest_size_power_of_two,
-          smallest_elem_count_power_of_two, fb_policy)) {
+          smallest_elem_count_power_of_two, fb_policy,
+          will_be_accessed_by_only_one_thread)) {
     r_mempool_destroy(rmp);
     return NULL;
   }
@@ -559,7 +619,7 @@ bool init_static_r_mempool_internal_pools(r_mempool *rmp,
     uint32_t sub_buffer_size = ecount * (esize + offsetof(entry_header, next));
     rmp->mem_pools[index] = mempool_create_from_preallocated_buffer(
         sub_buffer, sub_buffer_size, esize,
-        rmp->fb_policy == fallback_at_first_exhaustion);
+        rmp->fb_policy == fallback_at_first_exhaustion, !rmp->should_use_locks);
     if (!rmp->mem_pools[index]) {
       // The cleanup will be performed by the caller.
       return false;
@@ -577,7 +637,8 @@ bool init_static_r_mempool_internal_pools(r_mempool *rmp,
 r_mempool *r_mempool_create_from_preallocated_buffer(
     void *buffer, uint32_t buf_size, uint8_t smallest_size_power_of_two,
     uint8_t largest_size_power_of_two, uint8_t smallest_elem_count_power_of_two,
-    r_memory_fallback_policy_t fb_policy) {
+    r_memory_fallback_policy_t fb_policy,
+    bool will_be_accessed_by_only_one_thread) {
   r_mempool *rmp = (r_mempool *)mem_calloc(1, sizeof(r_mempool));
   if (!rmp) {
     return NULL;
@@ -585,7 +646,8 @@ r_mempool *r_mempool_create_from_preallocated_buffer(
 
   if (!assess_r_mempool_create_inputs(
           rmp, smallest_size_power_of_two, largest_size_power_of_two,
-          smallest_elem_count_power_of_two, fb_policy)) {
+          smallest_elem_count_power_of_two, fb_policy,
+          will_be_accessed_by_only_one_thread)) {
     r_mempool_destroy(rmp);
     return NULL;
   }
@@ -613,7 +675,10 @@ void *mempool_pseudo_alloc_entry(mempool *mp, uint32_t elem_size) {
 
   uint32_t ext_elem_size = USER_SIZE_TO_EXT_SIZE(elem_size);
 
-  rw_lock_wrlock(&mp->lock);
+  if (mp->should_use_locks) {
+    rw_lock_wrlock(&mp->lock);
+  }
+
   void *new_buffer = mem_alloc(ext_elem_size);
   if (new_buffer) {
     entry_header *header = (entry_header *)new_buffer;
@@ -622,7 +687,10 @@ void *mempool_pseudo_alloc_entry(mempool *mp, uint32_t elem_size) {
     result = (void *)&header->next;
     ++mp->active_dynamic_memory_buffer_count;
   }
-  rw_lock_unlock(&mp->lock);
+
+  if (mp->should_use_locks) {
+    rw_lock_unlock(&mp->lock);
+  }
 
   return result;
 }

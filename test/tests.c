@@ -1,23 +1,28 @@
 #include <cmempool.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
-
 #include <tau/tau.h>
 TAU_MAIN()  // sets up Tau (+ main function)
 
 // C_MEMPOOL TESTS
 
 TEST(cmempools, create_fails) {
-  mempool* mp = mempool_create(0, sizeof(int), false);
+  mempool* mp = mempool_create(0, sizeof(int), false, false);
   REQUIRE_EQ((void*)mp, NULL);
 
-  mp = mempool_create(16, 0, false);
+  mp = mempool_create(16, 0, false, false);
   REQUIRE_EQ((void*)mp, NULL);
 }
 
 TEST(cmempools, create_succeeds) {
-  mempool* mp = mempool_create(256, sizeof(int), false);
+  mempool* mp = mempool_create(256, sizeof(int), false, false);
+  REQUIRE_NE((void*)mp, NULL);
+
+  mempool_destroy(mp);
+  REQUIRE_EQ((void*)mp, NULL);
+
+  mp = mempool_create(256, sizeof(int), false, true);
   REQUIRE_NE((void*)mp, NULL);
 
   mempool_destroy(mp);
@@ -25,7 +30,60 @@ TEST(cmempools, create_succeeds) {
 }
 
 TEST(cmempools, allocations_and_deallocations_fallback_disabled) {
-  mempool* mp = mempool_create(256, sizeof(int), false);
+  mempool* mp = mempool_create(256, sizeof(int), false, false);
+  REQUIRE_NE((void*)mp, NULL);
+
+  REQUIRE_EQ(mempool_used_count(mp), 0);
+  REQUIRE_EQ(mempool_total_capacity(mp), 256);
+
+  int* ptrs[256] = {0};
+
+  // Allocate all buffers.
+  for (uint32_t i = 0; i < 256; ++i) {
+    ptrs[i] = mempool_alloc_entry(mp);
+    REQUIRE_NE((void*)ptrs[i], NULL);
+    *ptrs[i] = i;
+    REQUIRE_EQ(mempool_used_count(mp), i + 1);
+    REQUIRE_EQ(mempool_total_capacity(mp), 256);
+  }
+
+  // Verify the failure to allocate further.
+  int* tmp_ptr = mempool_alloc_entry(mp);
+  REQUIRE_EQ((void*)tmp_ptr, NULL);
+
+  // Deallocate all.
+  for (uint32_t i = 0; i < 256; ++i) {
+    mempool_free_entry(ptrs[i]);
+    REQUIRE_EQ(mempool_used_count(mp), 256 - (i + 1));
+    REQUIRE_EQ(mempool_total_capacity(mp), 256);
+  }
+
+  // Reallocate all buffers.
+  for (uint32_t i = 0; i < 256; ++i) {
+    ptrs[i] = mempool_alloc_entry(mp);
+    REQUIRE_NE((void*)ptrs[i], NULL);
+    *ptrs[i] = i;
+    REQUIRE_EQ(mempool_used_count(mp), i + 1);
+    REQUIRE_EQ(mempool_total_capacity(mp), 256);
+  }
+
+  // Verify the failure to allocate further again.
+  tmp_ptr = mempool_alloc_entry(mp);
+  REQUIRE_EQ((void*)tmp_ptr, NULL);
+
+  // Deallocate all.
+  for (uint32_t i = 0; i < 256; ++i) {
+    mempool_free_entry(ptrs[i]);
+    REQUIRE_EQ(mempool_used_count(mp), 256 - (i + 1));
+    REQUIRE_EQ(mempool_total_capacity(mp), 256);
+  }
+
+  mempool_destroy(mp);
+  REQUIRE_EQ((void*)mp, NULL);
+}
+
+TEST(cmempools, allocations_and_deallocations_fallback_disabled_no_locks) {
+  mempool* mp = mempool_create(256, sizeof(int), false, true);
   REQUIRE_NE((void*)mp, NULL);
 
   REQUIRE_EQ(mempool_used_count(mp), 0);
@@ -78,7 +136,64 @@ TEST(cmempools, allocations_and_deallocations_fallback_disabled) {
 }
 
 TEST(cmempools, allocations_and_deallocations_fallback_enabled) {
-  mempool* mp = mempool_create(256, sizeof(int), true);
+  mempool* mp = mempool_create(256, sizeof(int), true, false);
+  REQUIRE_NE((void*)mp, NULL);
+
+  REQUIRE_EQ(mempool_used_count(mp), 0);
+  REQUIRE_EQ(mempool_total_capacity(mp), 256);
+
+  int* ptrs[256] = {0};
+
+  // Allocate all buffers.
+  for (uint32_t i = 0; i < 256; ++i) {
+    ptrs[i] = mempool_alloc_entry(mp);
+    REQUIRE_NE((void*)ptrs[i], NULL);
+    *ptrs[i] = i;
+    REQUIRE_EQ(mempool_used_count(mp), i + 1);
+    REQUIRE_EQ(mempool_total_capacity(mp), 256);
+  }
+
+  // Verify the allocation of a buffer via fallback.
+  int* tmp_ptr = mempool_alloc_entry(mp);
+  REQUIRE_NE((void*)tmp_ptr, NULL);
+  // Free the fallback buffer.
+  mempool_free_entry(tmp_ptr);
+
+  // Deallocate all.
+  for (uint32_t i = 0; i < 256; ++i) {
+    mempool_free_entry(ptrs[i]);
+    REQUIRE_EQ(mempool_used_count(mp), 256 - (i + 1));
+    REQUIRE_EQ(mempool_total_capacity(mp), 256);
+  }
+
+  // Reallocate all buffers.
+  for (uint32_t i = 0; i < 256; ++i) {
+    ptrs[i] = mempool_alloc_entry(mp);
+    REQUIRE_NE((void*)ptrs[i], NULL);
+    *ptrs[i] = i;
+    REQUIRE_EQ(mempool_used_count(mp), i + 1);
+    REQUIRE_EQ(mempool_total_capacity(mp), 256);
+  }
+
+  // Verify the allocation of a buffer via fallback again.
+  tmp_ptr = mempool_alloc_entry(mp);
+  REQUIRE_NE((void*)tmp_ptr, NULL);
+  // Free the fallback buffer.
+  mempool_free_entry(tmp_ptr);
+
+  // Deallocate all.
+  for (uint32_t i = 0; i < 256; ++i) {
+    mempool_free_entry(ptrs[i]);
+    REQUIRE_EQ(mempool_used_count(mp), 256 - (i + 1));
+    REQUIRE_EQ(mempool_total_capacity(mp), 256);
+  }
+
+  mempool_destroy(mp);
+  REQUIRE_EQ((void*)mp, NULL);
+}
+
+TEST(cmempools, allocations_and_deallocations_fallback_enabled_no_locks) {
+  mempool* mp = mempool_create(256, sizeof(int), true, true);
   REQUIRE_NE((void*)mp, NULL);
 
   REQUIRE_EQ(mempool_used_count(mp), 0);
@@ -135,7 +250,7 @@ TEST(cmempools, allocations_and_deallocations_fallback_enabled) {
 }
 
 TEST(cmempools, c_allocations_and_deallocations_fallback_disabled) {
-  mempool* mp = mempool_create(256, sizeof(int), false);
+  mempool* mp = mempool_create(256, sizeof(int), false, false);
   REQUIRE_NE((void*)mp, NULL);
 
   REQUIRE_EQ(mempool_used_count(mp), 0);
@@ -188,7 +303,7 @@ TEST(cmempools, c_allocations_and_deallocations_fallback_disabled) {
 }
 
 TEST(cmempools, c_allocations_and_deallocations_fallback_enabled) {
-  mempool* mp = mempool_create(256, sizeof(int), true);
+  mempool* mp = mempool_create(256, sizeof(int), true, false);
   REQUIRE_NE((void*)mp, NULL);
 
   REQUIRE_EQ(mempool_used_count(mp), 0);
@@ -250,7 +365,44 @@ char* preallocated_ptrs[32768] = {0};  // 8388608 / 256 = 32768
 
 TEST(cmempools, preallocated_buffer_without_fallback) {
   mempool* mp = mempool_create_from_preallocated_buffer(
-      preallocated_mp_buffer, sizeof(preallocated_mp_buffer), 256, false);
+      preallocated_mp_buffer, sizeof(preallocated_mp_buffer), 256, false,
+      false);
+  REQUIRE_NE((void*)mp, NULL);
+
+  uint32_t capacity = mempool_total_capacity(mp);
+  REQUIRE_EQ(capacity, 32768);
+
+  for (uint32_t i = 0; i < capacity; ++i) {
+    preallocated_ptrs[i] = mempool_alloc_entry(mp);
+    REQUIRE_NE((void*)preallocated_ptrs[i], NULL);
+  }
+
+  REQUIRE_EQ(mempool_alloc_entry(mp), NULL);
+
+  for (uint32_t i = 0; i < capacity; ++i) {
+    mempool_free_entry(preallocated_ptrs[i]);
+    REQUIRE_EQ((void*)preallocated_ptrs[i], NULL);
+  }
+
+  for (uint32_t i = 0; i < capacity; ++i) {
+    preallocated_ptrs[i] = mempool_calloc_entry(mp);
+    REQUIRE_NE((void*)preallocated_ptrs[i], NULL);
+  }
+
+  REQUIRE_EQ(mempool_calloc_entry(mp), NULL);
+
+  for (uint32_t i = 0; i < capacity; ++i) {
+    mempool_free_entry(preallocated_ptrs[i]);
+    REQUIRE_EQ((void*)preallocated_ptrs[i], NULL);
+  }
+
+  mempool_destroy(mp);
+  REQUIRE_EQ((void*)mp, NULL);
+}
+
+TEST(cmempools, preallocated_buffer_without_fallback_no_locks) {
+  mempool* mp = mempool_create_from_preallocated_buffer(
+      preallocated_mp_buffer, sizeof(preallocated_mp_buffer), 256, false, true);
   REQUIRE_NE((void*)mp, NULL);
 
   uint32_t capacity = mempool_total_capacity(mp);
@@ -286,7 +438,47 @@ TEST(cmempools, preallocated_buffer_without_fallback) {
 
 TEST(cmempools, preallocated_buffer_with_fallback) {
   mempool* mp = mempool_create_from_preallocated_buffer(
-      preallocated_mp_buffer, sizeof(preallocated_mp_buffer), 256, true);
+      preallocated_mp_buffer, sizeof(preallocated_mp_buffer), 256, true, false);
+  REQUIRE_NE((void*)mp, NULL);
+
+  uint32_t capacity = mempool_total_capacity(mp);
+  REQUIRE_EQ(capacity, 32768);
+
+  for (uint32_t i = 0; i < capacity; ++i) {
+    preallocated_ptrs[i] = mempool_alloc_entry(mp);
+    REQUIRE_NE((void*)preallocated_ptrs[i], NULL);
+  }
+
+  void* tmp = mempool_alloc_entry(mp);
+  REQUIRE_NE(tmp, NULL);
+  mempool_free_entry(tmp);
+
+  for (uint32_t i = 0; i < capacity; ++i) {
+    mempool_free_entry(preallocated_ptrs[i]);
+    REQUIRE_EQ((void*)preallocated_ptrs[i], NULL);
+  }
+
+  for (uint32_t i = 0; i < capacity; ++i) {
+    preallocated_ptrs[i] = mempool_calloc_entry(mp);
+    REQUIRE_NE((void*)preallocated_ptrs[i], NULL);
+  }
+
+  tmp = mempool_calloc_entry(mp);
+  REQUIRE_NE(tmp, NULL);
+  mempool_free_entry(tmp);
+
+  for (uint32_t i = 0; i < capacity; ++i) {
+    mempool_free_entry(preallocated_ptrs[i]);
+    REQUIRE_EQ((void*)preallocated_ptrs[i], NULL);
+  }
+
+  mempool_destroy(mp);
+  REQUIRE_EQ((void*)mp, NULL);
+}
+
+TEST(cmempools, preallocated_buffer_with_fallback_no_locks) {
+  mempool* mp = mempool_create_from_preallocated_buffer(
+      preallocated_mp_buffer, sizeof(preallocated_mp_buffer), 256, true, true);
   REQUIRE_NE((void*)mp, NULL);
 
   uint32_t capacity = mempool_total_capacity(mp);
@@ -327,33 +519,39 @@ TEST(cmempools, preallocated_buffer_with_fallback) {
 // C_R_MEMPOOL TESTS
 
 TEST(r_mempools, create_fails) {
-  r_mempool* rmp = r_mempool_create(4, 17, 0, fallback_disabled);
+  r_mempool* rmp = r_mempool_create(4, 17, 0, fallback_disabled, false);
   REQUIRE_EQ((void*)rmp, NULL);
 
-  rmp = r_mempool_create(4, 0, 17, fallback_disabled);
+  rmp = r_mempool_create(4, 0, 17, fallback_disabled, false);
   REQUIRE_EQ((void*)rmp, NULL);
 
-  rmp = r_mempool_create(0, 17, 17, fallback_disabled);
+  rmp = r_mempool_create(0, 17, 17, fallback_disabled, false);
   REQUIRE_EQ((void*)rmp, NULL);
 
-  rmp = r_mempool_create(4, 3, 17, fallback_disabled);
+  rmp = r_mempool_create(4, 3, 17, fallback_disabled, false);
   REQUIRE_EQ((void*)rmp, NULL);
 
-  rmp = r_mempool_create(4, 4, 17, fallback_disabled);
+  rmp = r_mempool_create(4, 4, 17, fallback_disabled, false);
   REQUIRE_EQ((void*)rmp, NULL);
 
-  rmp = r_mempool_create(4, 6, 17, -1);
+  rmp = r_mempool_create(4, 6, 17, -1, false);
   REQUIRE_EQ((void*)rmp, NULL);
 
-  rmp = r_mempool_create(4, 6, 17, __fallback_end_place_holder);
+  rmp = r_mempool_create(4, 6, 17, __fallback_end_place_holder, false);
   REQUIRE_EQ((void*)rmp, NULL);
 
-  rmp = r_mempool_create(4, 6, 17, __fallback_end_place_holder + 1);
+  rmp = r_mempool_create(4, 6, 17, __fallback_end_place_holder + 1, false);
   REQUIRE_EQ((void*)rmp, NULL);
 }
 
 TEST(r_mempools, create_succeeds) {
-  r_mempool* rmp = r_mempool_create(4, 17, 17, fallback_disabled);
+  r_mempool* rmp = r_mempool_create(4, 17, 17, fallback_disabled, false);
+  REQUIRE_NE((void*)rmp, NULL);
+
+  r_mempool_destroy(rmp);
+  REQUIRE_EQ((void*)rmp, NULL);
+
+  rmp = r_mempool_create(4, 17, 17, fallback_disabled, true);
   REQUIRE_NE((void*)rmp, NULL);
 
   r_mempool_destroy(rmp);
@@ -361,7 +559,7 @@ TEST(r_mempools, create_succeeds) {
 }
 
 TEST(r_mempools, simple_allocations) {
-  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled);
+  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled, false);
   char* ptr = NULL;
 
   REQUIRE_EQ(r_mempool_used_count(rmp, 16), 0);
@@ -423,7 +621,7 @@ TEST(r_mempools, simple_allocations) {
 }
 
 TEST(r_mempools, simple_reallocations) {
-  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled);
+  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled, false);
   char* ptr = NULL;
 
   REQUIRE_EQ(r_mempool_used_count(rmp, 16), 0);
@@ -476,7 +674,7 @@ TEST(r_mempools, simple_reallocations) {
 }
 
 TEST(r_mempools, simple_c_allocations) {
-  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled);
+  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled, false);
   char* ptr = NULL;
 
   REQUIRE_EQ(r_mempool_used_count(rmp, 16), 0);
@@ -538,7 +736,7 @@ TEST(r_mempools, simple_c_allocations) {
 }
 
 TEST(r_mempools, exhaust_all_fallback_disabled) {
-  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled);
+  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled, false);
 
   uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
 
@@ -573,7 +771,7 @@ TEST(r_mempools, exhaust_all_fallback_disabled) {
 }
 
 TEST(r_mempools, c_exhaust_all_fallback_disabled) {
-  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled);
+  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_disabled, false);
 
   uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
 
@@ -608,7 +806,8 @@ TEST(r_mempools, c_exhaust_all_fallback_disabled) {
 }
 
 TEST(r_mempools, try_exhausting_with_fallback_at_first_exhaustion) {
-  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_at_first_exhaustion);
+  r_mempool* rmp =
+      r_mempool_create(4, 6, 7, fallback_at_first_exhaustion, false);
 
   uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
 
@@ -673,7 +872,74 @@ TEST(r_mempools, try_exhausting_with_fallback_at_first_exhaustion) {
 }
 
 TEST(r_mempools, c_try_exhausting_with_fallback_at_first_exhaustion) {
-  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_at_first_exhaustion);
+  r_mempool* rmp =
+      r_mempool_create(4, 6, 7, fallback_at_first_exhaustion, false);
+
+  uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
+
+  void* ptrs[ptrs_len];
+  uint ptr_iterator = 0;
+
+  for (uint32_t i = 0; i < 128; ++i) {
+    ptrs[ptr_iterator++] = r_mempool_calloc_entry(rmp, 16);
+  }
+
+  for (uint32_t i = 0; i < 64; ++i) {
+    ptrs[ptr_iterator++] = r_mempool_calloc_entry(rmp, 32);
+  }
+
+  for (uint32_t i = 0; i < 32; ++i) {
+    ptrs[ptr_iterator++] = r_mempool_calloc_entry(rmp, 64);
+  }
+
+  for (uint32_t size = 16; size <= 64; size *= 2) {
+    REQUIRE_EQ(r_mempool_used_count(rmp, size),
+               r_mempool_total_capacity(rmp, size));
+  }
+
+  // Even if the pre-allocated buffers have been exhausted, as the
+  // fallback is enabled, it will allocate more memory from heap
+  // to fulfill the ask. The allocations will happen via separate
+  // internal memory pools, and therefore the function
+  // r_mempool_calloc_entry will return distinct values for different
+  // sizes.
+  void* tmp_ptr_16 = r_mempool_calloc_entry(rmp, 16);
+  REQUIRE_NE((void*)tmp_ptr_16, NULL);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 16), 1);
+
+  void* tmp_ptr_32 = r_mempool_calloc_entry(rmp, 32);
+  REQUIRE_NE((void*)tmp_ptr_32, NULL);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 1);
+
+  void* tmp_ptr_64 = r_mempool_calloc_entry(rmp, 64);
+  REQUIRE_NE((void*)tmp_ptr_64, NULL);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 1);
+
+  for (uint32_t i = 0; i < ptrs_len; ++i) {
+    r_mempool_free_entry(ptrs[i]);
+  }
+
+  for (uint32_t size = 16; size <= 64; size *= 2) {
+    REQUIRE_EQ(r_mempool_used_count(rmp, size), 0);
+  }
+
+  r_mempool_free_entry(tmp_ptr_16);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 16), 0);
+
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 1);
+  r_mempool_free_entry(tmp_ptr_32);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 0);
+
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 1);
+  r_mempool_free_entry(tmp_ptr_64);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 0);
+
+  r_mempool_destroy(rmp);
+}
+
+TEST(r_mempools, c_try_exhausting_with_fallback_at_first_exhaustion_no_locks) {
+  r_mempool* rmp =
+      r_mempool_create(4, 6, 7, fallback_at_first_exhaustion, true);
 
   uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
 
@@ -738,7 +1004,8 @@ TEST(r_mempools, c_try_exhausting_with_fallback_at_first_exhaustion) {
 }
 
 TEST(r_mempools, try_exhausting_with_fallback_at_last_exhaustion) {
-  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_at_last_exhaustion);
+  r_mempool* rmp =
+      r_mempool_create(4, 6, 7, fallback_at_last_exhaustion, false);
 
   uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
 
@@ -815,7 +1082,8 @@ TEST(r_mempools, try_exhausting_with_fallback_at_last_exhaustion) {
 }
 
 TEST(r_mempools, c_try_exhausting_with_fallback_at_last_exhaustion) {
-  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_at_last_exhaustion);
+  r_mempool* rmp =
+      r_mempool_create(4, 6, 7, fallback_at_last_exhaustion, false);
 
   uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
 
@@ -840,7 +1108,84 @@ TEST(r_mempools, c_try_exhausting_with_fallback_at_last_exhaustion) {
   }
 
   // Even if the pre-allocated buffers have been exhausted, as the
-  // fallback is enabled, it will allocate more memory from heap
+  // fallback is enabled, it will allocate more memory from the heap
+  // to fulfill the ask.
+  // Please notice that the r_mempool_dynamic_allocs_count will
+  // climb up regardless of the size.
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 16), 0);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 0);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 0);
+  void* tmp_ptr_16 = r_mempool_calloc_entry(rmp, 16);
+  REQUIRE_NE((void*)tmp_ptr_16, NULL);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 16), 1);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 1);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 1);
+
+  void* tmp_ptr_32 = r_mempool_calloc_entry(rmp, 32);
+  REQUIRE_NE((void*)tmp_ptr_32, NULL);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 16), 2);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 2);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 2);
+
+  void* tmp_ptr_64 = r_mempool_calloc_entry(rmp, 64);
+  REQUIRE_NE((void*)tmp_ptr_64, NULL);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 16), 3);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 3);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 3);
+
+  for (uint32_t i = 0; i < ptrs_len; ++i) {
+    r_mempool_free_entry(ptrs[i]);
+  }
+
+  for (uint32_t size = 16; size <= 64; size *= 2) {
+    REQUIRE_EQ(r_mempool_used_count(rmp, size), 0);
+  }
+
+  // The r_mempool_dynamic_allocs_count still holds the cumulative
+  // dynamic allocation number regardless of the size
+  r_mempool_free_entry(tmp_ptr_16);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 16), 2);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 2);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 2);
+  r_mempool_free_entry(tmp_ptr_32);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 16), 1);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 1);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 1);
+  r_mempool_free_entry(tmp_ptr_64);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 16), 0);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 32), 0);
+  REQUIRE_EQ(r_mempool_dynamic_allocs_count(rmp, 64), 0);
+
+  r_mempool_destroy(rmp);
+}
+
+TEST(r_mempools, c_try_exhausting_with_fallback_at_last_exhaustion_no_locks) {
+  r_mempool* rmp = r_mempool_create(4, 6, 7, fallback_at_last_exhaustion, true);
+
+  uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
+
+  void* ptrs[ptrs_len];
+  uint ptr_iterator = 0;
+
+  for (uint32_t i = 0; i < 128; ++i) {
+    ptrs[ptr_iterator++] = r_mempool_calloc_entry(rmp, 16);
+  }
+
+  for (uint32_t i = 0; i < 64; ++i) {
+    ptrs[ptr_iterator++] = r_mempool_calloc_entry(rmp, 32);
+  }
+
+  for (uint32_t i = 0; i < 32; ++i) {
+    ptrs[ptr_iterator++] = r_mempool_calloc_entry(rmp, 64);
+  }
+
+  for (uint32_t size = 16; size <= 64; size *= 2) {
+    REQUIRE_EQ(r_mempool_used_count(rmp, size),
+               r_mempool_total_capacity(rmp, size));
+  }
+
+  // Even if the pre-allocated buffers have been exhausted, as the
+  // fallback is enabled, it will allocate more memory from the heap
   // to fulfill the ask.
   // Please notice that the r_mempool_dynamic_allocs_count will
   // climb up regardless of the size.
@@ -902,7 +1247,51 @@ TEST(static_r_mempools, exhaust_all_fallback_disabled) {
 
   r_mempool* rmp = r_mempool_create_from_preallocated_buffer(
       preallocated_rmp_buffer, sizeof(preallocated_rmp_buffer), 4, 6, 7,
-      fallback_disabled);
+      fallback_disabled, false);
+
+  uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
+
+  void* ptrs[ptrs_len];
+
+  for (uint32_t i = 0; i < ptrs_len; ++i) {
+    ptrs[i] = r_mempool_alloc_entry(rmp, 8);
+    REQUIRE_NE((void*)ptrs[i], NULL);
+    // It even gives 32 and 64 sized buffers to fulfill our request.
+  }
+
+  for (uint32_t size = 16; size <= 64; size *= 2) {
+    REQUIRE_EQ(r_mempool_used_count(rmp, size),
+               r_mempool_total_capacity(rmp, size));
+  }
+
+  // It doesn't allocate new memory from the heap, once the pre-allocated
+  // buffers are exhausted, that's it, no new memory till some are given
+  // back.
+  void* tmp_ptr = r_mempool_alloc_entry(rmp, 8);
+  REQUIRE_EQ((void*)tmp_ptr, NULL);
+
+  for (uint32_t i = 0; i < ptrs_len; ++i) {
+    r_mempool_free_entry(ptrs[i]);
+  }
+
+  for (uint32_t size = 16; size <= 64; size *= 2) {
+    REQUIRE_EQ(r_mempool_used_count(rmp, size), 0);
+  }
+
+  r_mempool_destroy(rmp);
+}
+
+TEST(static_r_mempools, exhaust_all_fallback_disabled_no_locks) {
+  DECLARE_STATIC_RMEMPOOL_BUFFER(
+      preallocated_rmp_buffer,  // The name of the buffer.
+      4,  // The size of the smallest element in the pool - 2^4 : 16
+      6,  // The size of the largest element in the pool - 2^6 : 64
+      7   // The number of smallest elements in the pool - 2^7 : 128
+  );
+
+  r_mempool* rmp = r_mempool_create_from_preallocated_buffer(
+      preallocated_rmp_buffer, sizeof(preallocated_rmp_buffer), 4, 6, 7,
+      fallback_disabled, true);
 
   uint32_t ptrs_len = 224;  // 16: 128, 32: 64, 64: 32 => 128 + 64 + 32 = 224
 
